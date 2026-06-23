@@ -1,0 +1,20 @@
+{{- if .Values.pgbouncer.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ template "sentry.fullname" . }}-pgbouncer
+  labels:
+    {{- include "sentry.component.labels" (dict "component" "pgbouncer" "ctx" .) | nindent 4 }}
+spec:
+  selector:
+    app: {{ template "sentry.fullname" . }}-pgbouncer
+  ports:
+  - name: pgbouncer
+    port: 5432
+    targetPort: 5432
+  sessionAffinity: {{ .Values.pgbouncer.service.sessionAffinity }}
+  {{- if .Values.pgbouncer.service.sessionAffinityConfig }}
+  sessionAffinityConfig: {{ toYaml .Values.pgbouncer.service.sessionAffinityConfig | nindent 4 }}
+  {{- end }}
+{{- end }}

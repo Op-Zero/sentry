@@ -1,0 +1,1102 @@
+# =============================================================================
+# Sentry Helm Chart - Production-Grade Configuration
+# Chart Version: 32.2.0 | Sentry Version: 26.5.0
+# ~100k events/day | Single-Node K8s | 12 vCPU | 32 GB RAM | 150 GB NVMe
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# GLOBAL SETTINGS
+# ---------------------------------------------------------------------------
+ipv6: false
+
+global:
+  clusterDomain: "cluster.local"
+  nodeSelector: {}
+  tolerations: []
+  sidecars: []
+  volumeMounts: []
+  volumes: []
+
+profiles:
+  - feature-complete
+
+asHook: false
+
+# ---------------------------------------------------------------------------
+# FEATURE TOGGLES
+# ---------------------------------------------------------------------------
+sentry:
+  singleOrganization: true
+
+  features:
+    orgSubdomains: false
+    enableProfiling: false
+    enableSessionReplay: true
+    enableFeedback: false
+    enableSpan: false
+    enableUptime: false
+
+# ---------------------------------------------------------------------------
+# SENTRY WEB (uWSGI)
+# replicaCount: 2 | Critical path for all API + UI traffic
+# ---------------------------------------------------------------------------
+  web:
+    enabled: true
+    strategyType: RollingUpdate
+    replicas: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2
+        memory: 2Gi
+    autoscaling:
+      enabled: false
+    uwsgiMaxFd: 8192
+
+# ---------------------------------------------------------------------------
+# TASK BROKER (Rust) / TASK SCHEDULER / TASK WORKER (Python)
+# taskWorker: replicaCount 2 | Critical async processing path
+# ---------------------------------------------------------------------------
+  taskBroker:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    persistence:
+      enabled: true
+      size: 1Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+    brokers:
+      - name: default
+        topic: taskworker
+        consumerGroup: taskworker
+        replicas: 1
+      - name: ingest
+        topic: taskworker-ingest
+        consumerGroup: taskworker-ingest
+        replicas: 1
+      - name: long
+        topic: taskworker-long
+        consumerGroup: taskworker-long
+        replicas: 1
+      - name: products
+        topic: taskworker-products
+        consumerGroup: taskworker-products
+        replicas: 1
+
+  taskScheduler:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  taskWorker:
+    enabled: true
+    replicas: 2
+    concurrency: 4
+    maxChildTaskCount: 10000
+    resources:
+      requests:
+        cpu: 1
+        memory: 2Gi
+      limits:
+        cpu: 3
+        memory: 4Gi
+    autoscaling:
+      enabled: false
+    workers:
+      - name: default
+        brokerName: default
+        brokerReplicas: 1
+        concurrency: 4
+        replicas: 2
+      - name: ingest
+        brokerName: ingest
+        brokerReplicas: 1
+        concurrency: 4
+        replicas: 2
+      - name: long
+        brokerName: long
+        brokerReplicas: 1
+        concurrency: 2
+        replicas: 1
+      - name: products
+        brokerName: products
+        brokerReplicas: 1
+        concurrency: 2
+        replicas: 1
+
+# ---------------------------------------------------------------------------
+# RELAY (Ingestion Proxy)
+# replicaCount: 2 | Critical path - handles all SDK connections
+# ---------------------------------------------------------------------------
+relay:
+  enabled: true
+  strategyType: RollingUpdate
+  replicas: 2
+  mode: managed
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+  processing:
+    kafkaConfig:
+      messageMaxBytes: 50000000
+  init:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# SENTRY INGEST CONSUMERS (Python)
+# All: replicaCount 1, resources: 100m/256Mi request, 500m/1Gi limit
+# These consume from Kafka and process raw events into ClickHouse
+# ---------------------------------------------------------------------------
+  ingestConsumerAttachments:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  ingestConsumerEvents:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  ingestConsumerTransactions:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  ingestReplayRecordings:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  ingestOccurrences:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  ingestFeedback:
+    enabled: false
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  ingestMonitors:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  monitorsClockTasks:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  monitorsClockTick:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# METRICS CONSUMERS
+# ---------------------------------------------------------------------------
+  billingMetricsConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  genericMetricsConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  metricsConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# POST-PROCESS FORWARDERS
+# ---------------------------------------------------------------------------
+  postProcessForwardErrors:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  postProcessForwardTransactions:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  postProcessForwardIssuePlatform:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# PROCESS CONSUMERS (Spans / Segments)
+# ---------------------------------------------------------------------------
+  processSegments:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  processSpans:
+    enabled: false
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# SUBSCRIPTION CONSUMERS (Alerting)
+# ---------------------------------------------------------------------------
+  subscriptionConsumerResultsEapItems:
+    enabled: false
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerEvents:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerTransactions:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerGenericMetrics:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerMetrics:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  uptimeResults:
+    enabled: false
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# SENTRY CLEANUP (Event Retention)
+# 30-day retention for events
+# ---------------------------------------------------------------------------
+  cleanup:
+    enabled: true
+    schedule: "0 0 * * *"
+    days: 30
+    concurrency: 1
+    concurrencyPolicy: Allow
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    activeDeadlineSeconds: 300
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# SENTRY KAFKA CONFIG (Client-side compression)
+# ---------------------------------------------------------------------------
+  kafka:
+    message:
+      max:
+        bytes: 50000000
+    compression:
+      type: "lz4"
+    socket:
+      timeout:
+        ms: 1000
+
+# ---------------------------------------------------------------------------
+# SNUBA CONFIGURATION
+# ---------------------------------------------------------------------------
+snuba:
+  annotations: {}
+
+  api:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    autoscaling:
+      enabled: false
+
+  consumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  eapItemsConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  outcomesConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchSize: "3"
+
+  outcomesBillingConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchSize: "3"
+    maxBatchTimeMs: 750
+
+  replacer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  metricsConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  replaysConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  transactionsConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  issueOccurrenceConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  groupAttributesConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  genericMetricsGaugesConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  genericMetricsCountersConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  genericMetricsDistributionConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  genericMetricsSetsConsumer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    maxBatchTimeMs: 750
+
+  # Subscription consumers (Snuba-side) - replicaCount always 1
+  subscriptionConsumerEapItems:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerEvents:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerMetrics:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerTransactions:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerGenericMetricsSets:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerGenericMetricsDistributions:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerGenericMetricsCounters:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  subscriptionConsumerGenericMetricsGauges:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  clickhouse:
+    maxConnections: 500
+
+  rustConsumer: true
+
+  cleanup:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# LAUNCHPAD TASK WORKER (Rust)
+# ---------------------------------------------------------------------------
+launchpadTaskWorker:
+  enabled: true
+  replicas: 1
+  concurrency: 4
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# SYMBOLICATOR (Native Crash Symbolication)
+# Disabled by default. Enable if processing native (iOS, Android NDK, Rust) crashes.
+# ---------------------------------------------------------------------------
+symbolicator:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# KAFKA (Bitnami sub-chart)
+# Single-node KRaft mode | 15-day retention | Resource: 500m/1Gi request, 2/2Gi limit
+# ---------------------------------------------------------------------------
+kafka:
+  enabled: true
+  image:
+    repository: bitnamilegacy/kafka
+
+  config:
+    log.retention.hours: "168"
+    log.retention.bytes: "-1"
+    log.segment.bytes: "1073741824"
+    log.cleaner.threads: "2"
+    log.cleanup.policy: "delete"
+    message.max.bytes: "50000000"
+    replica.fetch.max.bytes: "50000000"
+    compression.type: "lz4"
+
+  kraft:
+    enabled: true
+
+  provisioning:
+    replicationFactor: 1
+    enabled: true
+    numPartitions: 1
+
+  listeners:
+    client:
+      protocol: "PLAINTEXT"
+    controller:
+      protocol: "PLAINTEXT"
+    interbroker:
+      protocol: "PLAINTEXT"
+    external:
+      protocol: "PLAINTEXT"
+
+  controller:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2
+        memory: 2Gi
+    persistence:
+      size: 20Gi
+
+  metrics:
+    jmx:
+      image:
+        repository: bitnamilegacy/jmx-exporter
+
+# ---------------------------------------------------------------------------
+# REDIS (Bitnami sub-chart)
+# Single-node | Resource: 100m/512Mi request, 500m/1Gi limit
+# ---------------------------------------------------------------------------
+redis:
+  enabled: true
+  image:
+    repository: bitnamilegacy/redis
+  metrics:
+    image:
+      repository: bitnamilegacy/redis-exporter
+  architecture: standalone
+  replica:
+    replicaCount: 1
+  master:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    persistence:
+      enabled: true
+      size: 8Gi
+  auth:
+    enabled: false
+  nameOverride: sentry-redis
+
+# ---------------------------------------------------------------------------
+# POSTGRESQL (Bitnami sub-chart)
+# Single-node (replication off) | Resource: 500m/2Gi request, 2/4Gi limit
+# ---------------------------------------------------------------------------
+postgresql:
+  enabled: true
+  image:
+    repository: bitnamilegacy/postgresql
+  nameOverride: sentry-postgresql
+  auth:
+    database: sentry
+  replication:
+    enabled: false
+  connMaxAge: 0
+  primary:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: 2
+        memory: 4Gi
+    persistence:
+      enabled: true
+      size: 20Gi
+
+# ---------------------------------------------------------------------------
+# MEMCACHED
+# 2GB memory limit
+# ---------------------------------------------------------------------------
+memcached:
+  config:
+    memoryLimit: 2048
+    verbosity: 1
+    extraArgs:
+      - "-I"
+      - "26214400"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# METRICS (Prometheus statsd Exporter)
+# Disabled by default. Enable if you have a Prometheus stack.
+# ---------------------------------------------------------------------------
+metrics:
+  enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# FILESTORE (Event Attachments, Artifacts)
+# Filesystem backend | 50Gi PVC
+# ---------------------------------------------------------------------------
+filestore:
+  backend: filesystem
+  filesystem:
+    path: /var/lib/sentry/files
+    persistence:
+      enabled: true
+      accessMode: ReadWriteOnce
+      size: 50Gi
+      persistentWorkers: true
+      lookupVolumeName: true
+
+  profiles:
+    backend: filesystem
+    filesystem:
+      path: /var/vroom/sentry-profiles
+      persistence:
+        enabled: true
+        accessMode: ReadWriteOnce
+        size: 10Gi
+
+# ---------------------------------------------------------------------------
+# REPLAY STORAGE
+# ---------------------------------------------------------------------------
+replay:
+  storage:
+    backend: ""
+
+# ---------------------------------------------------------------------------
+# NODESTORE (Raw Event Storage)
+# Filesystem backed by default; S3 recommended for production.
+# ---------------------------------------------------------------------------
+nodestore:
+  backend: ""
+
+# ---------------------------------------------------------------------------
+# EXTERNAL CLICKHOUSE
+# ClickHouse is NOT a sub-chart - deploy separately.
+# Single-node, 2/8Gi request, 4/12Gi limit recommended.
+# ---------------------------------------------------------------------------
+externalClickhouse:
+  host: "clickhouse"
+  tcpPort: 9000
+  httpPort: 8123
+  username: default
+  password: ""
+  database: default
+  singleNode: true
+
+# ---------------------------------------------------------------------------
+# CONFIG CUSTOMIZATIONS
+# ---------------------------------------------------------------------------
+config:
+  configYml: {}
+  taskbrokerRoutingYml:
+    taskworker.route.overrides:
+      "ingest.profiling": "taskworker-ingest"
+      "ingest.errors": "taskworker-ingest"
+      "ingest.transactions": "taskworker-ingest"
+      "ingest.attachments": "taskworker-ingest"
+      "ingest.errors.postprocess": "taskworker-ingest"
+      "deletions": "taskworker-long"
+      "deletions.control": "taskworker-long"
+      "crons": "taskworker-products"
+      "uptime": "taskworker-products"
+      "replays": "taskworker-products"
+      "profiling": "taskworker-products"
+      "releasehealth": "taskworker-products"
+  sentryConfPy: |
+    # Disable unused features
+    SENTRY_OPTIONS["system.rate-limit"] = 0
+  snubaSettingsPy: ""
+  web:
+    httpKeepalive: 15
+    httpChunkedInput: true
+    workers: 3
+    threads: 4
+    memoryReport: false
+    maxRequests: 100000
+    maxRequestsDelta: 500
+    maxWorkerLifetime: 86400
+    thunderLock: true
+    logXForwardedFor: false
+    bufferSize: 32768
+    limitPost: 209715200
+    disableLogging: true
+    reloadOnRss: 600
+    ignoreSignpipe: true
+    ignoreWriteErrors: true
+    disableWriteException: true
+
+# ---------------------------------------------------------------------------
+# NGINX (Optional - only if you need it as sidecar)
+# ---------------------------------------------------------------------------
+nginx:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# INGRESS
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  ingressClassName: nginx
+
+# ---------------------------------------------------------------------------
+# HOOKS (Init Jobs)
+# ---------------------------------------------------------------------------
+hooks:
+  enabled: true
+  preUpgrade: false
+  removeOnSuccess: true
+  activeDeadlineSeconds: 1200
+  dbCheck:
+    enabled: true
+    resources:
+      limits:
+        memory: 64Mi
+      requests:
+        cpu: 100m
+        memory: 64Mi
+  dbInit:
+    enabled: true
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2560Mi
+      requests:
+        cpu: 300m
+        memory: 2048Mi
+  snubaInit:
+    enabled: true
+    kafka:
+      enabled: true
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 1Gi
+      requests:
+        cpu: 700m
+        memory: 1Gi
+  snubaMigrate:
+    enabled: true
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 1Gi
+      requests:
+        cpu: 700m
+        memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# SYSTEM
+# ---------------------------------------------------------------------------
+system:
+  url: ""
+  adminEmail: ""
+  public: false
+
+mail:
+  backend: dummy
+
+auth:
+  register: true
+
+# ---------------------------------------------------------------------------
+# PGBOUNCER (Connection Pooler)
+# Disabled - at 100k events/day, PostgreSQL handles connections fine.
+# ---------------------------------------------------------------------------
+pgbouncer:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# MISCELLANEOUS
+# ---------------------------------------------------------------------------
+revisionHistoryLimit: 5
+useArgoCdCompatibleAnnotations: false

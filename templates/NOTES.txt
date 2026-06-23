@@ -1,0 +1,5 @@
+{{ if not (.Values.kafka.enabled) }}
+* Sentry use external kafka:
+
+{{ template "sentry.kafka.bootstrap_servers_string" . }}
+{{ end -}}

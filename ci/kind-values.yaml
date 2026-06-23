@@ -1,0 +1,39 @@
+profiles:
+  - errors-only
+
+user:
+  password: ci-test-password
+
+kafka:
+  enabled: true
+  kraft:
+    enabled: true
+  provisioning:
+    replicationFactor: 1
+  controller:
+    replicaCount: 1
+  broker:
+    replicaCount: 1
+  # The CI cluster runs only two Kafka nodes (1 controller + 1 broker), but the
+  # internal __consumer_offsets and transaction-state topics default to
+  # replication factor 3. With fewer than 3 brokers these topics cannot be
+  # created, and Arroyo never reaches Healthcheck.poll() to write
+  # /tmp/health.txt. That makes startup probe fail.
+  extraConfig: |
+    offsets.topic.replication.factor=1
+    transaction.state.log.replication.factor=1
+    transaction.state.log.min.isr=1
+
+redis:
+  enabled: true
+  master.persistence.enabled: false
+  replica.replicaCount: 0
+
+externalClickhouse:
+  host: "clickhouse-clickhouse-external.default.svc"
+  tcpPort: 9000
+  httpPort: 8123
+  username: "default"
+  password: ""
+  database: "default"
+  singleNode: true

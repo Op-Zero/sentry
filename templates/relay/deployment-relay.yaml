@@ -1,0 +1,292 @@
+{{- if .Values.relay.enabled }}
+{{- $redisHost := include "sentry.redis.host" . -}}
+{{- $redisPort := include "sentry.redis.port" . -}}
+{{- $redisDb     := include "sentry.redis.db" . -}}
+{{- $redisPass := include "sentry.redis.password" . -}}
+{{- $redisProto  := ternary "rediss" "redis" (eq (include "sentry.redis.ssl" .) "true")  -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "sentry.fullname" . }}-relay
+  labels:
+    app: {{ template "sentry.fullname" . }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    release: "{{ .Release.Name }}"
+    heritage: "{{ .Release.Service }}"
+    {{- include "sentry.component.labels" (dict "component" "relay" "ctx" .) | nindent 4 }}
+  {{- if .Values.asHook }}
+  {{- /* Add the Helm annotations so that deployment after asHook from true to false works */}}
+  annotations:
+    meta.helm.sh/release-name: "{{ .Release.Name }}"
+    meta.helm.sh/release-namespace: "{{ .Release.Namespace }}"
+    "helm.sh/hook": "post-install,post-upgrade"
+    "helm.sh/hook-weight": "25"
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ template "sentry.fullname" . }}
+      release: "{{ .Release.Name }}"
+      role: relay
+{{- if not .Values.relay.autoscaling.enabled }}
+  replicas: {{ .Values.relay.replicas }}
+{{- end }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    type: {{ .Values.relay.strategyType | default "RollingUpdate" }}
+  template:
+    metadata:
+      annotations:
+        checksum/relay: {{ .Values.config.relay | sha256sum }}
+        checksum/config.yaml: {{ include "sentry.relay.config" . | sha256sum }}
+        {{- if .Values.relay.annotations }}
+{{ toYaml .Values.relay.annotations | indent 8 }}
+        {{- end }}
+      labels:
+        app: {{ template "sentry.fullname" . }}
+        release: "{{ .Release.Name }}"
+        role: relay
+        {{- include "sentry.component.labels" (dict "component" "relay" "ctx" .) | nindent 8 }}
+        {{- if .Values.relay.podLabels }}
+{{ toYaml .Values.relay.podLabels | indent 8 }}
+        {{- end }}
+    spec:
+      affinity:
+      {{- if .Values.relay.affinity }}
+{{ toYaml .Values.relay.affinity | indent 8 }}
+      {{- end }}
+      {{- if .Values.relay.nodeSelector }}
+      nodeSelector:
+{{ toYaml .Values.relay.nodeSelector | indent 8 }}
+      {{- else if .Values.global.nodeSelector }}
+      nodeSelector:
+{{ toYaml .Values.global.nodeSelector | indent 8 }}
+      {{- end }}
+      {{- if .Values.relay.tolerations }}
+      tolerations:
+{{ toYaml .Values.relay.tolerations | indent 8 }}
+      {{- else if .Values.global.tolerations }}
+      tolerations:
+{{ toYaml .Values.global.tolerations | indent 8 }}
+      {{- end }}
+      {{- if .Values.relay.topologySpreadConstraints }}
+      topologySpreadConstraints:
+{{ toYaml .Values.relay.topologySpreadConstraints | indent 8 }}
+      {{- end }}
+      {{- if .Values.images.relay.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml .Values.images.relay.imagePullSecrets | indent 8 }}
+      {{- end }}
+      {{- if .Values.relay.securityContext }}
+      securityContext:
+{{ toYaml .Values.relay.securityContext | indent 8 }}
+      {{- end }}
+      initContainers:
+        {{- if and (not .Values.kafka.enabled) .Values.externalKafka.sasl.existingSecret }}
+        - name: {{ .Chart.Name }}-relay-config-render
+          image: "busybox:1.36"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              esc() { printf '%s' "$1" | sed 's/[&|\\]/\\&/g'; }
+              ESC_MECH=$(esc "$KAFKA_SASL_MECHANISM")
+              ESC_USER=$(esc "$KAFKA_SASL_USERNAME")
+              ESC_PASS=$(esc "$KAFKA_SASL_PASSWORD")
+              sed "s|\${KAFKA_SASL_MECHANISM}|${ESC_MECH}|g; s|\${KAFKA_SASL_USERNAME}|${ESC_USER}|g; s|\${KAFKA_SASL_PASSWORD}|${ESC_PASS}|g" /config-template/config.yml > /rendered-config/config.yml
+          env:
+            - name: KAFKA_SASL_MECHANISM
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalKafka.sasl.existingSecret }}
+                  key: {{ default "mechanism" .Values.externalKafka.sasl.existingSecretKeys.mechanism }}
+            - name: KAFKA_SASL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalKafka.sasl.existingSecret }}
+                  key: {{ default "username" .Values.externalKafka.sasl.existingSecretKeys.username }}
+            - name: KAFKA_SASL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalKafka.sasl.existingSecret }}
+                  key: {{ default "password" .Values.externalKafka.sasl.existingSecretKeys.password }}
+          volumeMounts:
+            - name: config
+              mountPath: /config-template
+              readOnly: true
+            - name: rendered-config
+              mountPath: /rendered-config
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+        {{- end }}
+        - name: {{ .Chart.Name }}-relay-init
+          image: "{{ template "relay.image" . }}"
+          imagePullPolicy: {{ default "IfNotPresent" .Values.images.sentry.pullPolicy }}
+          args:
+            - "credentials"
+            - {{ .Values.relay.init.credentialsSubcommand | default "generate" | quote }}
+{{- if .Values.relay.init.additionalArgs }}
+{{ toYaml .Values.relay.init.additionalArgs | indent 12 }}
+{{- end }}
+          resources:
+{{ toYaml .Values.relay.init.resources | indent 12 }}
+{{- if .Values.relay.containerSecurityContext }}
+          securityContext:
+{{ toYaml .Values.relay.containerSecurityContext | indent 12 }}
+{{- end }}
+          env:
+            - name: RELAY_PORT
+              value: '{{ template "relay.port" }}'
+          {{- if and (not $redisPass) (.Values.externalRedis.existingSecret) }}
+            - name: HELM_CHARTS_RELAY_REDIS_PASSWORD_CONTROLLED
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalRedis.existingSecret }}
+                  key: {{ default "redis-password" .Values.externalRedis.existingSecretKey }}
+            - name: RELAY_REDIS_URL
+              value: {{ $redisProto }}://:$(HELM_CHARTS_RELAY_REDIS_PASSWORD_CONTROLLED)@{{ $redisHost }}:{{ $redisPort }}/{{ $redisDb }}
+          {{- end }}
+{{- if .Values.relay.init.env }}
+{{ toYaml .Values.relay.init.env | indent 12 }}
+{{- end }}
+          volumeMounts:
+            - name: credentials
+              mountPath: /work/.relay
+            {{- if and (not .Values.kafka.enabled) .Values.externalKafka.sasl.existingSecret }}
+            - name: rendered-config
+              mountPath: /work/.relay/config.yml
+              subPath: config.yml
+              readOnly: true
+            {{- else }}
+            - name: config
+              mountPath: /work/.relay/config.yml
+              subPath: config.yml
+              readOnly: true
+            {{- end }}
+{{- if .Values.relay.init.volumeMounts }}
+{{ toYaml .Values.relay.init.volumeMounts | indent 12 }}
+{{- end }}
+      {{- if .Values.dnsPolicy }}
+      dnsPolicy: {{ .Values.dnsPolicy | quote }}
+      {{- end }}
+      {{- if .Values.dnsConfig }}
+      dnsConfig:
+{{ toYaml .Values.dnsConfig | indent 8 }}
+      {{- end }}
+      containers:
+      - name: {{ .Chart.Name }}-relay
+{{- if .Values.relay.args }}
+        args:
+{{ toYaml .Values.relay.args | indent 10 }}
+{{- end }}
+        image: "{{ template "relay.image" . }}"
+        imagePullPolicy: {{ default "IfNotPresent" .Values.images.sentry.pullPolicy }}
+        ports:
+        - containerPort: {{ template "relay.port" }}
+        env:
+        - name: RELAY_PORT
+          value: '{{ template "relay.port" }}'
+        {{- if and (not $redisPass) (.Values.externalRedis.existingSecret) }}
+        - name: HELM_CHARTS_RELAY_REDIS_PASSWORD_CONTROLLED
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.externalRedis.existingSecret }}
+              key: {{ default "redis-password" .Values.externalRedis.existingSecretKey }}
+        - name: RELAY_REDIS_URL
+          value: {{ $redisProto }}://:$(HELM_CHARTS_RELAY_REDIS_PASSWORD_CONTROLLED)@{{ $redisHost }}:{{ $redisPort }}/{{ $redisDb }}
+        {{- end }}
+{{- if .Values.relay.env }}
+{{ toYaml .Values.relay.env | indent 8 }}
+{{- end }}
+        volumeMounts:
+          - name: credentials
+            mountPath: /work/.relay
+          {{- if and (not .Values.kafka.enabled) .Values.externalKafka.sasl.existingSecret }}
+          - name: rendered-config
+            mountPath: /work/.relay/config.yml
+            subPath: config.yml
+            readOnly: true
+          {{- else }}
+          - name: config
+            mountPath: /work/.relay/config.yml
+            subPath: config.yml
+            readOnly: true
+          {{- end }}
+          {{- if and .Values.geodata.volumeName .Values.geodata.accountID }}
+          - name: {{ .Values.geodata.volumeName }}
+            mountPath: {{ .Values.geodata.mountPath }}
+            readOnly: true
+          {{- end }}
+{{- if .Values.relay.volumeMounts }}
+{{ toYaml .Values.relay.volumeMounts | indent 10 }}
+{{- end }}
+{{- if .Values.global.volumeMounts }}
+{{ toYaml .Values.global.volumeMounts | indent 10 }}
+{{- end }}
+        livenessProbe:
+          failureThreshold: {{ .Values.relay.livenessProbe.failureThreshold }}
+          httpGet:
+            path: {{ template "relay.healthCheck.livenessRequestPath" }}
+            port: {{ template "relay.port" }}
+            scheme: HTTP
+          initialDelaySeconds: {{ .Values.relay.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.relay.livenessProbe.periodSeconds }}
+          successThreshold: {{ .Values.relay.livenessProbe.successThreshold }}
+          timeoutSeconds: {{ .Values.relay.livenessProbe.timeoutSeconds }}
+        readinessProbe:
+          failureThreshold: {{ .Values.relay.readinessProbe.failureThreshold }}
+          httpGet:
+            path: {{ template "relay.healthCheck.readinessRequestPath" }}
+            port: {{ template "relay.port" }}
+            scheme: HTTP
+          initialDelaySeconds: {{ .Values.relay.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.relay.readinessProbe.periodSeconds }}
+          successThreshold: {{ .Values.relay.readinessProbe.successThreshold }}
+          timeoutSeconds: {{ .Values.relay.readinessProbe.timeoutSeconds }}
+        resources:
+{{ toYaml .Values.relay.resources | indent 12 }}
+{{- if .Values.relay.containerSecurityContext }}
+        securityContext:
+{{ toYaml .Values.relay.containerSecurityContext | indent 12 }}
+{{- end }}
+{{- if .Values.relay.sidecars }}
+{{ toYaml .Values.relay.sidecars | indent 6 }}
+{{- end }}
+{{- if .Values.global.sidecars }}
+{{ toYaml .Values.global.sidecars | indent 6 }}
+{{- end }}
+      {{- if .Values.serviceAccount.enabled }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}-relay
+      {{- end }}
+      volumes:
+      - name: config
+        configMap:
+          name: {{ template "sentry.fullname" . }}-relay
+          defaultMode: 0644
+      - name: credentials
+        emptyDir: {}
+      {{- if and (not .Values.kafka.enabled) .Values.externalKafka.sasl.existingSecret }}
+      - name: rendered-config
+        emptyDir: {}
+      {{- end }}
+      {{- if and .Values.geodata.volumeName .Values.geodata.accountID }}
+      - name: {{ .Values.geodata.volumeName }}
+        persistentVolumeClaim:
+          claimName: data-sentry-geoip
+      {{- end }}
+{{- if .Values.relay.volumes }}
+{{ toYaml .Values.relay.volumes | indent 6 }}
+{{- end }}
+{{- if .Values.global.volumes }}
+{{ toYaml .Values.global.volumes | indent 6 }}
+{{- end }}
+      {{- if .Values.relay.priorityClassName }}
+      priorityClassName: "{{ .Values.relay.priorityClassName }}"
+      {{- end }}
+{{- end }}
