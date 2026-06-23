@@ -789,14 +789,12 @@ kafka:
     repository: bitnamilegacy/kafka
 
   config:
-    log.retention.hours: "168"
-    log.retention.bytes: "-1"
-    log.segment.bytes: "1073741824"
-    log.cleaner.threads: "2"
-    log.cleanup.policy: "delete"
-    message.max.bytes: "50000000"
-    replica.fetch.max.bytes: "50000000"
-    compression.type: "lz4"
+    extraConfig: |
+      log.retention.hours=168
+      log.segment.bytes=1073741824
+      log.retention.check.interval.ms=300000
+      message.max.bytes=50000000
+      replica.fetch.max.bytes=50000000
 
   kraft:
     enabled: true
