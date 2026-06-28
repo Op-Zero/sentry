@@ -1,0 +1,21 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "sentry.fullname" . }}-clickhouse-config
+  labels:
+    app: {{ template "sentry.fullname" . }}-clickhouse
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    release: "{{ .Release.Name }}"
+    heritage: "{{ .Release.Service }}"
+data:
+  enable_json.xml: |
+    <clickhouse>
+        <profiles>
+            <default>
+                <allow_experimental_json_type>1</allow_experimental_json_type>
+                <enable_json_type>1</enable_json_type>
+            </default>
+        </profiles>
+    </clickhouse>
+{{- end }}

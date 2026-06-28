@@ -1,0 +1,28 @@
+{{- if and .Values.ingress.enabled .Values.ingress.tls }}
+{{- $tlsSecretName := index .Values.ingress.tls 0 "secretName" -}}
+{{- $hostname := .Values.ingress.hostname -}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ template "sentry.fullname" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: sentry
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    release: "{{ .Release.Name }}"
+    heritage: "{{ .Release.Service }}"
+  annotations:
+    "helm.sh/hook": "post-install,post-upgrade"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+    "helm.sh/hook-weight": "-3"
+spec:
+  secretName: {{ $tlsSecretName }}
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: {{ $hostname }}
+  dnsNames:
+    - {{ $hostname }}
+  duration: 2160h
+  renewBefore: 360h
+{{- end }}

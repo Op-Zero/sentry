@@ -1,0 +1,72 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ template "sentry.fullname" . }}-clickhouse
+  labels:
+    app: {{ template "sentry.fullname" . }}-clickhouse
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    release: "{{ .Release.Name }}"
+    heritage: "{{ .Release.Service }}"
+spec:
+  serviceName: {{ template "sentry.clickhouse.host" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ template "sentry.fullname" . }}-clickhouse
+  template:
+    metadata:
+      labels:
+        app: {{ template "sentry.fullname" . }}-clickhouse
+    spec:
+      containers:
+      - name: clickhouse
+        image: {{ .Values.clickhouse.image.repository }}:{{ .Values.clickhouse.image.tag }}
+        ports:
+        - containerPort: {{ .Values.externalClickhouse.httpPort }}
+          name: http
+        - containerPort: {{ .Values.externalClickhouse.tcpPort }}
+          name: native
+        env:
+        - name: CLICKHOUSE_DB
+          value: {{ .Values.externalClickhouse.database | quote }}
+        - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+          value: "1"
+        {{- if .Values.clickhouse.resources }}
+        resources:
+{{ toYaml .Values.clickhouse.resources | indent 10 }}
+        {{- end }}
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/clickhouse
+        - name: config
+          mountPath: /etc/clickhouse-server/users.d/enable_json.xml
+          subPath: enable_json.xml
+      volumes:
+      - name: config
+        configMap:
+          name: {{ template "sentry.fullname" . }}-clickhouse-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: {{ .Values.clickhouse.persistence.size }}
+{{- end }}

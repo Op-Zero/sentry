@@ -15,4 +15,4 @@ dependencies:
   repository: oci://registry-1.docker.io/cloudpirates
   version: 0.7.0
 digest: sha256:11613581288338b8b94759d4438866780bcd3adbcbb815d9dee7132753ffb2da
-generated: "2026-05-29T12:27:53.995591111+06:00"
+generated: "2026-06-27T08:29:19.304744013Z"

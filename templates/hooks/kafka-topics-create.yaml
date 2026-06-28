@@ -1,0 +1,256 @@
+{{- if .Values.kafka.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "sentry.fullname" . }}-kafka-topics-create
+  labels:
+    app: sentry
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    release: "{{ .Release.Name }}"
+    heritage: "{{ .Release.Service }}"
+  annotations:
+    "helm.sh/hook": "post-install,post-upgrade"
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+    "helm.sh/hook-weight": "-1"
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 280
+  template:
+    metadata:
+      name: {{ template "sentry.fullname" . }}-kafka-topics-create
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: wait-and-create
+        image: bitnamilegacy/kafka:3.7.1-debian-12-r4
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/bash
+          - -c
+          - |
+            #!/bin/bash
+            BROKER="{{ template "sentry.kafka.host" . }}:{{ .Values.kafka.service.ports.client }}"
+            echo "Waiting for Kafka at $BROKER..."
+            for i in $(seq 1 40); do
+              if kafka-topics.sh --bootstrap-server "$BROKER" --list >/dev/null 2>&1; then
+                echo "Kafka ready after $((i*5))s"
+                break
+              fi
+              [ "$i" -eq 40 ] && echo "Kafka not ready" && exit 1
+              sleep 5
+            done
+
+            echo "Creating topics in parallel batches..."
+            RFX=1
+            PARTS=1
+            C=0
+            F=0
+
+            mk_topic() {
+              local t="$1"; shift
+              kafka-topics.sh --bootstrap-server "$BROKER" --create --if-not-exists \
+                --replication-factor $RFX --partitions $PARTS "$@" --topic "$t" >/dev/null 2>&1
+            }
+
+            run_batch() {
+              local PIDS=()
+              for t in "$@"; do
+                name="${t%%|*}"
+                cfg="${t#*|}"
+                if [ "$cfg" = "$name" ] || [ -z "$cfg" ]; then
+                  mk_topic "$name" &
+                else
+                  IFS=',' read -ra OPTS <<< "$cfg"
+                  local ARGS=()
+                  for o in "${OPTS[@]}"; do
+                    ARGS+=(--config "$o")
+                  done
+                  mk_topic "$name" "${ARGS[@]}" &
+                fi
+                PIDS+=($!)
+              done
+              for pid in "${PIDS[@]}"; do
+                wait "$pid" && ((C++)) || ((F++))
+              done
+            }
+
+            B1=(
+              "events|message.timestamp.type=LogAppendTime"
+              "event-replacements"
+              "snuba-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "cdc"
+              "transactions|message.timestamp.type=LogAppendTime"
+              "snuba-transactions-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "snuba-metrics|message.timestamp.type=LogAppendTime"
+              "outcomes"
+              "outcomes-dlq"
+              "outcomes-billing"
+            )
+            run_batch "${B1[@]}"
+            echo "Batch 1 done: $C ok, $F fail"
+
+            B2=(
+              "outcomes-billing-dlq"
+              "ingest-spans"
+              "ingest-sessions"
+              "snuba-metrics-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "scheduled-subscriptions-events"
+              "scheduled-subscriptions-transactions"
+              "scheduled-subscriptions-metrics"
+              "scheduled-subscriptions-generic-metrics-sets"
+              "scheduled-subscriptions-generic-metrics-distributions"
+              "scheduled-subscriptions-generic-metrics-counters"
+            )
+            run_batch "${B2[@]}"
+            echo "Batch 2 done: $C ok, $F fail"
+
+            B3=(
+              "scheduled-subscriptions-generic-metrics-gauges"
+              "events-subscription-results"
+              "transactions-subscription-results"
+              "metrics-subscription-results"
+              "generic-metrics-subscription-results"
+              "snuba-queries|message.timestamp.type=LogAppendTime"
+              "processed-profiles|message.timestamp.type=LogAppendTime"
+              "profiles-call-tree"
+              "ingest-replay-events|message.timestamp.type=LogAppendTime,max.message.bytes=15000000"
+              "snuba-generic-metrics|message.timestamp.type=LogAppendTime"
+            )
+            run_batch "${B3[@]}"
+            echo "Batch 3 done: $C ok, $F fail"
+
+            B4=(
+              "snuba-generic-metrics-sets-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "snuba-generic-metrics-distributions-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "snuba-generic-metrics-counters-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "snuba-generic-metrics-gauges-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "generic-events|message.timestamp.type=LogAppendTime"
+              "snuba-generic-events-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "group-attributes|message.timestamp.type=LogAppendTime"
+              "snuba-dead-letter-metrics"
+              "snuba-dead-letter-generic-metrics"
+              "snuba-dead-letter-replays"
+            )
+            run_batch "${B4[@]}"
+            echo "Batch 4 done: $C ok, $F fail"
+
+            B5=(
+              "snuba-dead-letter-generic-events"
+              "snuba-dead-letter-querylog"
+              "snuba-dead-letter-group-attributes"
+              "snuba-dead-letter-items"
+              "ingest-attachments"
+              "ingest-attachments-dlq"
+              "ingest-transactions"
+              "ingest-transactions-dlq"
+              "ingest-transactions-backlog"
+              "ingest-events-dlq"
+            )
+            run_batch "${B5[@]}"
+            echo "Batch 5 done: $C ok, $F fail"
+
+            B6=(
+              "ingest-events"
+              "ingest-replay-recordings"
+              "ingest-metrics"
+              "ingest-metrics-dlq"
+              "ingest-performance-metrics"
+              "ingest-feedback-events"
+              "ingest-feedback-events-dlq"
+              "ingest-monitors"
+              "monitors-clock-tasks"
+              "monitors-clock-tick"
+            )
+            run_batch "${B6[@]}"
+            echo "Batch 6 done: $C ok, $F fail"
+
+            B7=(
+              "monitors-incident-occurrences"
+              "profiles"
+              "ingest-occurrences"
+              "snuba-spans"
+              "snuba-eap-spans-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+              "scheduled-subscriptions-eap-spans"
+              "scheduled-subscriptions-eap-items"
+              "eap-spans-subscription-results"
+              "subscription-results-eap-items"
+              "snuba-items-commit-log|cleanup.policy=compact,delete,min.compaction.lag.ms=3600000"
+            )
+            run_batch "${B7[@]}"
+            echo "Batch 7 done: $C ok, $F fail"
+
+            B8=(
+              "snuba-eap-mutations"
+              "snuba-lw-deletions-generic-events"
+              "snuba-lw-deletions-eap-items"
+              "shared-resources-usage"
+              "snuba-profile-chunks"
+              "buffered-segments"
+              "buffered-segments-dlq"
+              "uptime-configs"
+              "uptime-results"
+              "snuba-uptime-results"
+            )
+            run_batch "${B8[@]}"
+            echo "Batch 8 done: $C ok, $F fail"
+
+            B9=(
+              "task-worker"
+              "snuba-ourlogs"
+              "snuba-items"
+              "taskworker"
+              "taskworker-dlq"
+              "taskworker-billing"
+              "taskworker-billing-dlq"
+              "taskworker-control"
+              "taskworker-control-dlq"
+              "taskworker-ingest"
+            )
+            run_batch "${B9[@]}"
+            echo "Batch 9 done: $C ok, $F fail"
+
+            B10=(
+              "taskworker-ingest-dlq"
+              "taskworker-ingest-errors"
+              "taskworker-ingest-errors-dlq"
+              "taskworker-ingest-transactions"
+              "taskworker-ingest-transactions-dlq"
+              "taskworker-internal"
+              "taskworker-internal-dlq"
+              "taskworker-limited"
+              "taskworker-limited-dlq"
+              "taskworker-long"
+            )
+            run_batch "${B10[@]}"
+            echo "Batch 10 done: $C ok, $F fail"
+
+            B11=(
+              "taskworker-long-dlq"
+              "taskworker-products"
+              "taskworker-products-dlq"
+              "taskworker-sentryapp"
+              "taskworker-sentryapp-dlq"
+              "taskworker-symbolication"
+              "taskworker-symbolication-dlq"
+              "taskworker-usage"
+              "taskworker-usage-dlq"
+              "ingest-outcomes"
+            )
+            run_batch "${B11[@]}"
+            echo "Batch 11 done: $C ok, $F fail"
+
+            TOTAL=$(kafka-topics.sh --bootstrap-server "$BROKER" --list 2>/dev/null | wc -l)
+            echo ""
+            echo "=== RESULT ==="
+            echo "Created: $C | Failed: $F | Total in Kafka: $TOTAL"
+        env:
+        - name: BITNAMI_DEBUG
+          value: "false"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2
+            memory: 2Gi
+{{- end }}
